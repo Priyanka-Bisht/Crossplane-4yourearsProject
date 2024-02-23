@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-node
+  namespace: frontend
+  labels:
+    app: frontend-node
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend-node
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: frontend-node
+    spec:
+      containers:
+      - name: frontend-node
+        image: us-central1-docker.pkg.dev/arcane-premise-405104/microservice/frontend-image:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            memory: "512Mi"  # Set the initial memory request
+            cpu: "100m"       # Set the initial CPU request
+          limits:
+            memory: "1024Mi"  # Set the maximum memory limit
+            cpu: "200m"      # Set the maximum CPU limit
