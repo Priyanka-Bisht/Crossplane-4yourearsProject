@@ -1,0 +1,25 @@
+apiVersion: compute.gcp.crossplane.io/v1beta1
+kind: Network
+metadata:
+  name: network
+spec:
+  forProvider:
+    autoCreateSubnetworks: false
+    description: 'This is a network built by crossplane'
+    routingConfig:
+      routingMode: 'REGIONAL'
+  providerConfigRef:
+    name: crossplane-provider-gcp
+---
+apiVersion: compute.gcp.crossplane.io/v1beta1
+kind: Subnetwork
+metadata:
+  name: subnet
+spec:
+  forProvider:
+    ipCidrRange: '10.144.0.0/20'
+    networkRef:
+      name: network
+    region: us-central1
+  providerConfigRef:
+    name: crossplane-provider-gcp
