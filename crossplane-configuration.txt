@@ -1,0 +1,331 @@
+using minikube provisioning crossplane
+
+doc reference - https://medium.com/quiqup-engineering/creating-a-gke-cluster-using-crossplane-a45253c04efa#:~:text=You%20will%20need%20to%20create,Kubernetes%20Engine%20Admin
+
+First step - create a service account in gcp and generate key.
+
+step 2- create secret using key file
+
+cat > authentication.yaml <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gcp-account-creds
+  namespace: crossplane-system
+type: Opaque
+data:
+  credentials: $(base64 crossplane-credentials.json | tr -d "\\n")
+EOF
+
+step -3
+Install the Crossplane CLI to extend kubectl functionality to build, push and install Crossplane packages:
+
+step -4 
+Install the GCP Crossplane provider using the command below:
+kubectl crossplane install provider crossplane/provider-gcp:v0.21.0
+(if this command will not work then use --
+crossplane xpkg install provider crossplane/provider-gcp:v0.21.0
+
+step -5
+GCP cloud ProviderConfig
+cat > provider-config.yaml <<EOF
+apiVersion: gcp.crossplane.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: crossplane-provider-gcp
+spec:
+  projectID: arcane-premise-405104
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: crossplane-system
+      name: gcp-account-creds
+      key: credentials
+EOF
+
+step -6 
+Create networking using the following file network.yaml
+
+apiVersion: compute.gcp.crossplane.io/v1beta1
+kind: Network
+metadata:
+  name: network
+spec:
+  forProvider:
+    autoCreateSubnetworks: false
+    description: 'This is a network built by crossplane'
+    routingConfig:
+      routingMode: 'REGIONAL'
+  providerConfigRef:
+    name: crossplane-provider-gcp
+---
+apiVersion: compute.gcp.crossplane.io/v1beta1
+kind: Subnetwork
+metadata:
+  name: subnet
+spec:
+  forProvider:
+    ipCidrRange: '10.144.0.0/20'
+    networkRef:
+      name: network
+    region: us-central1
+  providerConfigRef:
+    name: crossplane-provider-gcp
+
+step-7
+Now we have all the elements to create our GKE cluster. Create a gke-cluster.yaml file with the following content:
+---
+# API Reference: https://doc.crds.dev/github.com/crossplane/provider-gcp/container.gcp.crossplane.io/Cluster/v1beta2@v0.21.0 
+apiVersion: container.gcp.crossplane.io/v1beta2
+kind: Cluster
+metadata:
+  name: gke-crossplane-cluster
+spec:
+  forProvider:
+    initialClusterVersion: latest
+    network: "projects/arcane-premise-405104/global/networks/network"
+    subnetwork: "projects/arcane-premise-405104/regions/us-central1/subnetworks/subnet"
+    ipAllocationPolicy:
+      useIpAliases: true
+    defaultMaxPodsConstraint:
+      maxPodsPerNode: 110 # By default, GKE allows up to 110 Pods per node on Standard clusters
+    addonsConfig:
+      cloudRunConfig:
+        disabled: true
+        loadBalancerType: LOAD_BALANCER_TYPE_UNSPECIFIED
+      dnsCacheConfig:
+        enabled: false
+      gcePersistentDiskCsiDriverConfig:
+        enabled: true
+      horizontalPodAutoscaling:
+        disabled: false
+      httpLoadBalancing:
+        disabled: false
+      kubernetesDashboard:
+        disabled: true
+      networkPolicyConfig:
+        disabled: false
+    location: us-central1
+    binaryAuthorization: 
+      enabled: false
+    legacyAbac:
+      enabled: false
+    masterAuth:
+      clientCertificateConfig:
+        issueClientCertificate: false
+    monitoringService: monitoring.googleapis.com/kubernetes
+  providerConfigRef:
+    name: crossplane-provider-gcp
+  writeConnectionSecretToRef:
+    name: gke-crossplane-cluster
+    namespace: default
+---
+# API Reference: https://doc.crds.dev/github.com/crossplane/provider-gcp/container.gcp.crossplane.io/NodePool/v1beta1@v0.21.0
+apiVersion: container.gcp.crossplane.io/v1beta1
+kind: NodePool
+metadata:
+  name: standard-pool
+spec:
+  forProvider:
+    autoscaling:
+      autoprovisioned: false
+      enabled: true
+      minNodeCount: 1
+      maxNodeCount: 4
+    cluster: projects/arcane-premise-405104/locations/us-central1/clusters/gke-crossplane-cluster
+    config:
+      serviceAccount: crossplane-svc-acct@arcane-premise-405104.iam.gserviceaccount.com
+      diskSizeGb: 100
+      diskType: pd-ssd
+      imageType: cos_containerd
+      labels:
+        team: platform
+        cluster_name: gke-crossplane-cluster
+        created_by: crossplane
+      machineType: n1-standard-2
+      oauthScopes:
+        - "https://www.googleapis.com/auth/devstorage.read_only" # is required for communicating with gcr.io
+        - "https://www.googleapis.com/auth/logging.write"
+        - "https://www.googleapis.com/auth/monitoring"
+        - "https://www.googleapis.com/auth/servicecontrol"
+        - "https://www.googleapis.com/auth/service.management.readonly"
+        - "https://www.googleapis.com/auth/trace.append"
+        - "https://www.googleapis.com/auth/compute" # is required for mounting persistent storage on your nodes.
+    initialNodeCount: 1
+    locations:
+      - us-central1-a
+      - us-central1-b
+    management:
+      autoRepair: true
+      autoUpgrade: true
+    upgradeSettings:
+      maxSurge: 1
+      maxUnavailable: 0
+  providerConfigRef:
+    name: crossplane-provider-gcp
+
+
+_________________________________________________******************************________________________________________________
+____________________________________________________************************___________________________________________________
+gcloud container clusters get-credentials gke-crossplane-cluster --region us-central1 --project arcane-premise-405104
+
+to check context or current contexts
+kubectl config get-contexts 
+
+to switch context 
+kubectl config use-context docker-desktop
+
+_________________________________________________******************************________________________________________________
+====================================================== ARGOCD INSTALLATION ======================================================
+____________________________________________________************************___________________________________________________
+step - 6
+Install argocd - reference from document
+1. Install ArgoCD - 
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+2. Install ArgoCD CLI -
+VERSION=v2.10.0-rc3 
+curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/download/$VERSION/argocd-linux-amd64
+sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+rm argocd-linux-amd64 
+
+3. Access The Argo CD API Server
+kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+
+4. Login Using The CLI
+argocd admin initial-password -n argocd
+argocd login <argocd-server>
+argocd account update-password
+
+
+_________________________________________________******************************________________________________________________
+====================================================== INGRESS KUBERNETES  =====================================================
+____________________________________________________************************___________________________________________________
+
+Step1. Disable TLS:-
+kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{"data": {"server.insecure": "true"}}'
+
+_________________________________________________******************************________________________________________________
+====================================================== SELF SIGN CERTIFICATE  =====================================================
+____________________________________________________************************___________________________________________________ 
+STEP-1
+INSTALL OPENSSL
+
+STEP-2
+GENERATE A PRIVATE KEY(openssl genrsa -des3 -out server.key 2048)
+
+STEP-3
+GENERATE A CSR(openssl req -new -key server.key -sha256 -out server.csr)
+
+STEP-4
+GENERATING A SELF-SIGNED CERTIFICATE(openssl x509 -req -days 365 -in server.csr -signkey server.key -sha256 -out server.crt)
+
+**DECRYPT THE SERVET.KEY USE DECRYPTED KEY**
+ 
+
+=================******** MOVE FILES FROM LOCAL TO WSL **********=================
+Move files from local to wsl:-
+go to public folder locally move your files here.
+cd $HOME
+mv /mnt/c/Users/Public/server.crt .
+
+================================================================================
+================================================================================
+
+Step2. ================**********SERVICE**************=====================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: frontend
+spec:
+  type: NodePort
+  selector:
+    app: frontend-node
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 3000
+
+Step3. ================*********BACKENDCONFIG************==================
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: frontend-backend-config
+  namespace: frontend
+spec:
+  healthCheck:
+    checkIntervalSec: 30
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 2
+    type: HTTP
+    requestPath: /healthz
+    port: 8080
+	
+Step4. ================********FRONTENDCONFIG***********====================
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: frontend-frontend-config
+  namespace: frontend
+spec:
+  redirectToHttps:
+    enabled: true
+	
+Step5. ===================******SECRET*********======================
+kubectl -n frontend create secret tls secret-automationwiz-online \
+  --cert server.crt --key decrypted_server.key
+  
+Step6. ================*********INGRESS********========================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: frontend
+  annotations:
+    networking.gke.io/v1beta1.FrontendConfig: frontend-frontend-config
+spec:
+  tls:
+    - secretName: secret-automationwiz-online
+  rules:
+    - host: frontend.automationwiz.online
+      http:
+        paths:
+        - pathType: ImplementationSpecific
+          path: "/*"
+          backend:
+            service:
+              name: frontend-svc
+              port:
+                number: 8080
+
+Step7. ==========================*********DNS********========================
+kubectl -n <namespace> get ingress
+ Grep the address and create A name record on domain server.
+Other option to grep the ip adress is check the load balancer in console and perform further step.
+
+Now, hit the dns host. {Example: frontend.automationwiz.online}
+
+================================================================================================================
+================================================================================================================
+
+
+_______________________________________************************___________________________________________________
+==================********** Push Docker image to Artifact Registry ***********=======================
+_______________________________________************************___________________________________________________
+
+
+docker tag sumitroopchandani/npm-gitops:v10 gcr.io/arcane-premise-405104/microservice/npm-gitops:v10
+docker push gcr.io/arcane-premise-405104/microservice/npm-gitops:v10
+gcloud auth activate-service-account crossplane-svc-acct@arcane-premise-405104.iam.gserviceaccount.com --key-file=crossplane-credentials.json
+
+docker tag sumitroopchandani/npm-gitops:v10 us-central1-docker.pkg.dev/arcane-premise-405104/microservice/npm-gitops:v10
+docker push us-central1-docker.pkg.dev/arcane-premise-405104/microservice/npm-gitops:v10
+
+kubectl set image deployment/frontend-node frontend-node=us-central1-docker.pkg.dev/arcane-premise-405104/microservice/npm-gitops:v10 -n frontend
+
+
+
+
