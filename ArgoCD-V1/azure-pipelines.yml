@@ -1,0 +1,56 @@
+trigger: none  
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: BuildAndTest
+  jobs:
+  - job: BuildAndTest 
+    steps:
+    - script: |
+        COMMIT_SHA=$(Build.SourceVersion)
+        echo "##vso[task.setvariable variable=COMMIT_SHA]$COMMIT_SHA"
+        gcloud auth activate-service-account --key-file=sa-key.json --project=arcane-premise-405104
+        gcloud auth configure-docker us-central1-docker.pkg.dev -q
+        docker build -t us-central1-docker.pkg.dev/arcane-premise-405104/microservice/frontend-image-v1:$COMMIT_SHA .
+        docker tag us-central1-docker.pkg.dev/arcane-premise-405104/microservice/frontend-image-v1:$COMMIT_SHA us-central1-docker.pkg.dev/arcane-premise-405104/microservice/frontend-image-v1:latest
+        docker push us-central1-docker.pkg.dev/arcane-premise-405104/microservice/frontend-image-v1:$COMMIT_SHA
+        docker push us-central1-docker.pkg.dev/arcane-premise-405104/microservice/frontend-image-v1:latest
+        # npm run build
+        # npm test
+      displayName: 'Build and Test'
+
+- stage: DeployWithArgoCD
+  dependsOn: BuildAndTest
+  jobs:
+  - job: DeployWithArgoCD
+    steps:
+    - task: Kubernetes@1
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceEndpoint: 'kubernets'
+        namespace: 'frontend'
+        command: 'apply'
+        useConfigurationFile: true
+        configurationType: 'inline'
+        inline: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: Application
+          metadata:
+            name: testing
+            namespace: frontendv1
+          spec:
+            source:
+              repoURL: https://priyankabisht7055@dev.azure.com/priyankabisht7055/testing/_git/ArgoCD-v1
+              path: deployment
+              targetRevision: $(Build.SourceVersion)
+            destination:
+              server: https://kubernetes.default.svc
+              namespace: frontend
+            project: default
+            syncPolicy:
+              automated:
+                prune: true
+                selfHeal: true
+      displayName: 'Deploy with Argo CD'
